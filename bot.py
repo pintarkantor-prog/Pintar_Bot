@@ -33,6 +33,10 @@ class AdminState(StatesGroup):
 class UpdateHPState(StatesGroup):
     waiting_for_date = State()
 
+class FinanceState(StatesGroup):
+    waiting_for_nominal = State()
+    waiting_for_keterangan = State()
+
 class InputChannelState(StatesGroup):
     waiting_for_data = State()
 
@@ -197,8 +201,91 @@ async def process_fin_history(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "fin:back")
 async def process_fin_back(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
     await callback.message.delete()
     await cmd_finance_dashboard(callback.message, state)
+
+# --- FINANCE INPUT HANDLERS ---
+
+@dp.callback_query(F.data.startswith("fin:add:"))
+async def process_fin_add_start(callback: types.CallbackQuery, state: FSMContext):
+    tipe = callback.data.split(":")[2] # PENDAPATAN / PENGELUARAN
+    await state.update_data(tipe=tipe)
+    
+    # Pilih Kategori
+    if tipe == 'PENDAPATAN':
+        kategori_list = ["Penjualan Channel", "Jasa Push", "Lainnya"]
+    else:
+        kategori_list = ["Beli Akun", "Kuota/Proxy", "Gaji/Bonus", "Listrik/Alat", "Lainnya"]
+        
+    kb_list = []
+    for kat in kategori_list:
+        kb_list.append([InlineKeyboardButton(text=kat, callback_data=f"fin_kat:{kat}")])
+    kb_list.append([InlineKeyboardButton(text="❌ Batal", callback_data="fin:back")])
+    
+    await callback.message.edit_text(
+        f"📝 <b>INPUT {tipe}</b>\n\nPilih kategorinya dulu boss:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_list)
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("fin_kat:"))
+async def process_fin_kat_select(callback: types.CallbackQuery, state: FSMContext):
+    kat = callback.data.split(":")[1]
+    await state.update_data(kategori=kat)
+    await state.set_state(FinanceState.waiting_for_nominal)
+    
+    await callback.message.edit_text(
+        f"💰 <b>Kategori: {kat}</b>\n\nSekarang masukin nominalnya boss (Angka doang ya):\nContoh: <code>500000</code>",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Batal", callback_data="fin:back")]])
+    )
+    await callback.answer()
+
+@dp.message(FinanceState.waiting_for_nominal)
+async def process_fin_nominal_save(message: types.Message, state: FSMContext):
+    # Bersihin titik/koma kalo user iseng pake
+    clean_text = message.text.replace(".", "").replace(",", "").strip()
+    if not clean_text.isdigit():
+        await message.answer("❌ <b>Salah Format Boss!</b>\nMasukin angka murni aja (Contoh: 500000)"); return
+        
+    await state.update_data(nominal=int(clean_text))
+    await state.set_state(FinanceState.waiting_for_keterangan)
+    await message.answer(
+        "✍️ <b>Terakhir Boss!</b>\nKasih keterangan dikit biar nggak lupa buat apa:\nContoh: <code>Beli Kuota HP 1-10</code>",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⏩ Skip Keterangan", callback_data="fin_save:skip")]])
+    )
+
+@dp.callback_query(F.data == "fin_save:skip")
+@dp.message(FinanceState.waiting_for_keterangan)
+async def process_fin_final_save(event, state: FSMContext):
+    # Event bisa Message atau CallbackQuery
+    keterangan = "-"
+    if isinstance(event, types.Message):
+        keterangan = event.text
+        message = event
+    else:
+        message = event.message
+        await event.answer()
+
+    data = await state.get_data()
+    tgl_now = datetime.now().strftime("%Y-%m-%d") # Format DB: YYYY-MM-DD
+    
+    try:
+        db.supabase.table('Arus_Kas').insert({
+            'Tanggal': tgl_now,
+            'Tipe': data['tipe'],
+            'Kategori': data['kategori'],
+            'Nominal': data['nominal'],
+            'Keterangan': keterangan,
+            'Pencatat': "PINTARBOT"
+        }).execute()
+        
+        icon = "🟢" if data['tipe'] == 'PENDAPATAN' else "🔴"
+        await message.answer(f"✅ <b>BERES BOSS!</b>\n{icon} Transaksi <b>{data['tipe']}</b> sebesar <b>Rp {data['nominal']:,}</b> udah masuk ke database! ✨")
+        await state.clear()
+        await cmd_finance_dashboard(message, state)
+    except Exception as e:
+        await message.answer(f"❌ Gagal simpan transaksi: {str(e)}")
 
 @dp.message(F.text == "🔐 Admin Panel")
 async def cmd_admin_panel(message: types.Message, state: FSMContext):
