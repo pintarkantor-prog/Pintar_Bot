@@ -1,8 +1,15 @@
 import os
 import re
 from datetime import datetime
+import pytz
 from supabase import create_client, Client
 from config import SUPABASE_URL, SUPABASE_KEY
+
+# Setup Timezone Indonesia
+tz_indo = pytz.timezone('Asia/Jakarta')
+
+def get_now_indo():
+    return datetime.now(tz_indo).strftime('%d/%m/%Y %H:%M')
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -15,11 +22,11 @@ def get_audit_targets(status_filter='PROSES'):
         .execute()
     return response.data
 
-def update_audit_result(ch_id, new_subs, new_status=None):
+def update_audit_result(ch_id, new_subs, new_status=None, user_name="PINTARBOT"):
     """Update hasil audit ke database boss!"""
     data = {
         'SUBSCRIBE': new_subs,
-        'EDITED': f"Audit: PINTARBOT ({datetime.now().strftime('%d/%m/%Y %H:%M')})"
+        'EDITED': f"Audit: {user_name} ({get_now_indo()})"
     }
     if new_status:
         data['STATUS'] = new_status
@@ -28,10 +35,9 @@ def update_audit_result(ch_id, new_subs, new_status=None):
         if new_status.upper() == 'PROSES':
             current = get_channel_by_id(ch_id)
             if not current.get('HP'):
-                hp_label, slot_num = get_next_available_slot()
+                hp_label, _ = get_next_available_slot()
                 if hp_label:
                     data['HP'] = hp_label
-                    data['SLOT'] = slot_num
 
         # Jika akun mati/dijual, bersihkan HP dan SLOT
         if new_status.upper() in ['SUSPEND', 'BUSUK', 'SOLD']:
@@ -41,11 +47,11 @@ def update_audit_result(ch_id, new_subs, new_status=None):
     response = supabase.table('Channel_Pintar').update(data).eq('id', ch_id).execute()
     return response.data
 
-def update_channel_status(ch_id, status):
+def update_channel_status(ch_id, status, user_name="PINTARBOT"):
     """Ganti status channel boss!"""
     data = {
         'STATUS': status,
-        'EDITED': f"Up: PINTARBOT ({datetime.now().strftime('%d/%m/%Y %H:%M')})"
+        'EDITED': f"Up: {user_name} ({get_now_indo()})"
     }
     
     # --- AUTO-ASSIGN HP JIKA PINDAH KE PROSES ---
@@ -53,10 +59,9 @@ def update_channel_status(ch_id, status):
         current = get_channel_by_id(ch_id)
         # Jika belum punya HP atau HP-nya None
         if not current.get('HP'):
-            hp_label, slot_num = get_next_available_slot()
+            hp_label, _ = get_next_available_slot()
             if hp_label:
                 data['HP'] = hp_label
-                data['SLOT'] = slot_num
     
     # Jika akun mati/dijual, bersihkan HP dan SLOT
     if status.upper() in ['SUSPEND', 'BUSUK', 'SOLD']:
@@ -81,6 +86,12 @@ def find_channel(keyword):
 
 def add_new_channel(data):
     """Input channel baru ke database boss!"""
+    # --- AUTO-ASSIGN HP JIKA INPUT LANGSUNG PROSES ---
+    if data.get('STATUS') == 'PROSES' and not data.get('HP'):
+        hp_label, _ = get_next_available_slot()
+        if hp_label:
+            data['HP'] = hp_label
+            
     response = supabase.table('Channel_Pintar').insert(data).execute()
     return response.data
 
@@ -111,8 +122,7 @@ def get_all_hp_full():
     return response.data
 
 def get_next_available_slot():
-    """Cari HP yang slotnya masih bolong di Channel_Pintar doang boss!"""
-    # Cek angka 1 sampe 100, gak pake nanya tabel lain boss!
+    """Cari HP yang slotnya masih bolong di Channel_Pintar (Sinkron sama Web) boss!"""
     for i in range(1, 101):
         hp_label = str(i)
         res = supabase.table('Channel_Pintar') \
@@ -121,8 +131,12 @@ def get_next_available_slot():
             .eq('STATUS', 'PROSES') \
             .execute()
             
-        if res.count < 3:
-            return hp_label, res.count + 1
+        # --- ATURAN SLOT SAMA KAYAK DI WEB BOSS ---
+        # HP 1-18 max 3 slot, HP 19 ke atas max 4 slot
+        max_slot = 3 if i <= 18 else 4
+        
+        if res.count < max_slot:
+            return hp_label, None
             
     return None, None
 
@@ -134,12 +148,12 @@ def get_one_standby(exclude_ids=None):
     response = query.order('id').limit(1).execute()
     return response.data[0] if response.data else None
 
-def move_standby_to_proses(ch_id, hp_label):
+def move_standby_to_proses(ch_id, hp_label, user_name="PINTARBOT"):
     """Pindahin akun ke PROSES dan tag HP-nya boss!"""
     data = {
         'STATUS': 'PROSES',
         'HP': hp_label,
-        'EDITED': f"Up: PINTARBOT ({datetime.now().strftime('%d/%m/%Y %H:%M')})"
+        'EDITED': f"Up: {user_name} ({get_now_indo()})"
     }
     response = supabase.table('Channel_Pintar').update(data).eq('id', ch_id).execute()
     return response.data

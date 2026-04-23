@@ -537,13 +537,30 @@ async def process_input_data(message: types.Message, state: FSMContext):
     if len(data) < 5:
         await message.answer("❌ <b>Format Salah Boss!</b>\nContoh: <code>Email*Pass*Nama*Subs*Link</code>")
         return
+        
     email, password, nama, subs, link = [d.strip() for d in data[:5]]
+    user_name = "PINTARBOT"
+    tgl_now = db.get_now_indo()
+    
     try:
-        db.add_new_channel({'EMAIL': email, 'PASSWORD': password, 'NAMA_CHANNEL': nama, 'SUBSCRIBE': subs, 'LINK_CHANNEL': link, 'STATUS': 'STANDBY'})
+        db.add_new_channel({
+            'TANGGAL': tgl_now,
+            'EMAIL': email, 
+            'PASSWORD': password, 
+            'NAMA_CHANNEL': nama, 
+            'SUBSCRIBE': subs, 
+            'LINK_CHANNEL': link, 
+            'STATUS': 'STANDBY',
+            'PENCATAT': user_name,
+            'HP': None,
+            'SLOT': None,
+            'EDITED': f"New: {user_name} ({tgl_now})"
+        })
         await message.answer(f"✅ <b>Mantap Boss!</b> <code>{nama}</code> udah masuk status STANDBY.")
         await state.clear()
         await cmd_channel_management(message, state)
-    except Exception as e: await message.answer(f"❌ Gagal boss: {str(e)}")
+    except Exception as e: 
+        await message.answer(f"❌ Gagal boss: {str(e)}")
 
 @dp.message(UpdateStatusState.waiting_for_keyword)
 async def process_search_casual(message: types.Message, state: FSMContext):
@@ -778,9 +795,10 @@ async def process_audit_bulk_replace(callback: types.CallbackQuery):
     await callback.message.answer(f"⚔️ <b>EKSEKUSI MASSAL DIMULAI!</b>\nMarking <b>{len(items)}</b> akun ke status <b>{mode}</b>...")
     
     hp_queue = []
+    user_name = "PINTARBOT"
     for f in items:
         try:
-            db.update_audit_result(f['ch']['id'], 0, mode)
+            db.update_audit_result(f['ch']['id'], 0, mode, user_name)
             hp_queue.append(str(f['ch'].get('HP', '-')))
         except: continue
         
@@ -1106,7 +1124,8 @@ async def process_single_audit_upd(callback: types.CallbackQuery):
         # 1. Tandai akun lama jadi BUSUK/SUSPEND
         ch_old = db.get_channel_by_id(int(ch_id))
         hp_target = html.escape(str(ch_old.get('HP', '-')))
-        db.update_audit_result(int(ch_id), 0, mode)
+        user_name = "PINTARBOT"
+        db.update_audit_result(int(ch_id), 0, mode, user_name)
         
         await callback.answer(f"✅ Akun lama di {hp_target} sudah jadi {mode}!", show_alert=True)
         
@@ -1204,7 +1223,8 @@ async def process_slot_success(callback: types.CallbackQuery):
     
     try:
         # 1. Update ke PROSES dan pasang label HP
-        db.move_standby_to_proses(session['ch']['id'], session['target_hp'])
+        user_name = "PINTARBOT"
+        db.move_standby_to_proses(session['ch']['id'], session['target_hp'], user_name)
         await callback.answer("Berhasil sinkron!")
         
         await callback.message.edit_text(f"🚀 <b>MANTAP BOSS!</b>\nAkun <code>{session['ch']['EMAIL']}</code> sekarang sudah di <b>{session['target_hp']}</b>.\nData sinkron 100%! ✅")
@@ -1237,7 +1257,8 @@ async def process_ch_set(callback: types.CallbackQuery):
 @dp.callback_query(F.data.startswith("ch_conf:"))
 async def process_ch_conf(callback: types.CallbackQuery):
     _, ch_id, new_st = callback.data.split(":")
-    db.update_channel_status(ch_id, new_st); await callback.answer(f"✅ Jadi {new_st}!", show_alert=True)
+    user_name = "PINTARBOT"
+    db.update_channel_status(ch_id, new_st, user_name); await callback.answer(f"✅ Jadi {new_st}!", show_alert=True)
     # Balik ke detail
     ch = db.get_channel_by_id(ch_id)
     text = f"📄 <b>DETAIL: {ch['NAMA_CHANNEL']}</b>\n━━━━━━━━━━━━━━━\n📧 Email: <code>{ch['EMAIL']}</code>\n🔑 Pass: <code>{ch['PASSWORD']}</code>\n📊 Subs: {ch.get('SUBSCRIBE', 0)}\n📍 Status: {ch['STATUS']}\n📱 HP: {ch.get('HP', '-')}\n🔗 <a href='{ch['LINK_CHANNEL']}'>Link Channel</a>\n━━━━━━━━━━━━━━━"
