@@ -209,7 +209,11 @@ async def process_fin_back(callback: types.CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("fin:add:"))
 async def process_fin_add_start(callback: types.CallbackQuery, state: FSMContext):
-    tipe = callback.data.split(":")[2] # PENDAPATAN / PENGELUARAN
+    await callback.answer() # Jawab duluan biar gak hang
+    
+    parts = callback.data.split(":")
+    if len(parts) < 3: return
+    tipe = parts[2] # PENDAPATAN / PENGELUARAN
     await state.update_data(tipe=tipe)
     
     # Pilih Kategori
@@ -227,10 +231,10 @@ async def process_fin_add_start(callback: types.CallbackQuery, state: FSMContext
         f"📝 <b>INPUT {tipe}</b>\n\nPilih kategorinya dulu boss:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_list)
     )
-    await callback.answer()
 
 @dp.callback_query(F.data.startswith("fin_kat:"))
 async def process_fin_kat_select(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
     kat = callback.data.split(":")[1]
     await state.update_data(kategori=kat)
     await state.set_state(FinanceState.waiting_for_nominal)
@@ -239,7 +243,6 @@ async def process_fin_kat_select(callback: types.CallbackQuery, state: FSMContex
         f"💰 <b>Kategori: {kat}</b>\n\nSekarang masukin nominalnya boss (Angka doang ya):\nContoh: <code>500000</code>",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Batal", callback_data="fin:back")]])
     )
-    await callback.answer()
 
 @dp.message(FinanceState.waiting_for_nominal)
 async def process_fin_nominal_save(message: types.Message, state: FSMContext):
