@@ -213,14 +213,12 @@ async def process_fin_add_start(callback: types.CallbackQuery, state: FSMContext
     
     parts = callback.data.split(":")
     if len(parts) < 3: return
-    tipe = parts[2] # PENDAPATAN / PENGELUARAN
-    await state.update_data(tipe=tipe)
+    tipe_db = parts[2] # PENDAPATAN / PENGELUARAN
+    label_ui = "PEMASUKAN" if tipe_db == "PENDAPATAN" else "PENGELUARAN"
+    await state.update_data(tipe=tipe_db, label=label_ui)
     
-    # Pilih Kategori
-    if tipe == 'PENDAPATAN':
-        kategori_list = ["Penjualan Channel", "Jasa Push", "Lainnya"]
-    else:
-        kategori_list = ["Beli Akun", "Kuota/Proxy", "Gaji/Bonus", "Listrik/Alat", "Lainnya"]
+    # Pilih Kategori (Sesuai Web lu boss)
+    kategori_list = ["YouTube", "Gaji Tim", "Operasional", "Lainnya"]
         
     kb_list = []
     for kat in kategori_list:
@@ -228,19 +226,20 @@ async def process_fin_add_start(callback: types.CallbackQuery, state: FSMContext
     kb_list.append([InlineKeyboardButton(text="❌ Batal", callback_data="fin:back")])
     
     await callback.message.edit_text(
-        f"📝 <b>INPUT {tipe}</b>\n\nPilih kategorinya dulu boss:",
+        f"📝 <b>INPUT {label_ui}</b>\n\nPilih kategorinya dulu boss:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_list)
     )
 
 @dp.callback_query(F.data.startswith("fin_kat:"))
 async def process_fin_kat_select(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
+    data = await state.get_data()
     kat = callback.data.split(":")[1]
     await state.update_data(kategori=kat)
     await state.set_state(FinanceState.waiting_for_nominal)
     
     await callback.message.edit_text(
-        f"💰 <b>Kategori: {kat}</b>\n\nSekarang masukin nominalnya boss (Angka doang ya):\nContoh: <code>500000</code>",
+        f"💰 <b>{data['label']} > {kat}</b>\n\nSekarang masukin nominalnya boss (Angka doang ya):\nContoh: <code>500000</code>",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Batal", callback_data="fin:back")]])
     )
 
