@@ -1338,33 +1338,6 @@ async def process_slot_success(callback: types.CallbackQuery):
 # --- OTHER ---
 
 @dp.callback_query(F.data.startswith("ch_set:"))
-async def process_ch_set(callback: types.CallbackQuery):
-    _, ch_id, new_st = callback.data.split(":")
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Ya!", callback_data=f"ch_conf:{ch_id}:{new_st}")],[InlineKeyboardButton(text="❌ Batal", callback_data=f"ch_view:{ch_id}")]])
-    await callback.message.edit_text(f"⚠️ Ganti ke <b>{new_st}</b> boss?", reply_markup=kb); await callback.answer()
-
-@dp.callback_query(F.data.startswith("ch_conf:"))
-async def process_ch_conf(callback: types.CallbackQuery):
-    _, ch_id, new_st = callback.data.split(":")
-    user_name = "PINTARBOT"
-    db.update_channel_status(ch_id, new_st, user_name); await callback.answer(f"✅ Jadi {new_st}!", show_alert=True)
-    # Balik ke detail
-    ch = db.get_channel_by_id(ch_id)
-    text = f"📄 <b>DETAIL: {ch['NAMA_CHANNEL']}</b>\n━━━━━━━━━━━━━━━\n📧 Email: <code>{ch['EMAIL']}</code>\n🔑 Pass: <code>{ch['PASSWORD']}</code>\n📊 Subs: {ch.get('SUBSCRIBE', 0)}\n📍 Status: {ch['STATUS']}\n📱 HP: {ch.get('HP', '-')}\n🔗 <a href='{ch['LINK_CHANNEL']}'>Link Channel</a>\n━━━━━━━━━━━━━━━"
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🟢 PROSES", callback_data=f"ch_set:{ch_id}:PROSES"), InlineKeyboardButton(text="🟡 STANDBY", callback_data=f"ch_set:{ch_id}:STANDBY")],[InlineKeyboardButton(text="💰 SOLD", callback_data=f"ch_set:{ch_id}:SOLD"), InlineKeyboardButton(text="🔴 BUSUK", callback_data=f"ch_set:{ch_id}:BUSUK")],[InlineKeyboardButton(text="⬅️ Kembali", callback_data="ch_rekap:start")]])
-    await callback.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
-
-@dp.callback_query(F.data == "hp:menu")
-async def cmd_hp_menu(callback: types.CallbackQuery):
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📜 Liat Semua HP", callback_data="hp:list")],[InlineKeyboardButton(text="🏠 Menu Utama", callback_data="back_to_main_menu")]])
-    await callback.message.edit_text("📱 <b>MANAGEMENT HP</b>", reply_markup=kb); await callback.answer()
-
-@dp.callback_query(F.data == "hp:list")
-async def process_hp_list(callback: types.CallbackQuery):
-    hp_list = db.get_all_hp_full(); text = "📱 <b>DAFTAR HP</b>\n\n"
-    for hp in hp_list: text += f"▪️ <b>{hp['NAMA_HP']}</b> | {hp.get('NOMOR_HP','-')}\n"
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Kembali", callback_data="hp:menu")]])
-    await callback.message.edit_text(text, reply_markup=kb); await callback.answer()
 
 @dp.message()
 async def handle_unknown_message_casual(message: types.Message):
