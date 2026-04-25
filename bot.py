@@ -1099,16 +1099,16 @@ async def process_view_schedule(callback: types.CallbackQuery):
         hp_tasks = []
         for ch in ch_list:
             for col, icon in slot_icons.items():
-                jam = str(ch.get(col, 'EMPTY'))
-                if jam != 'EMPTY' and jam != 'null':
+                jam = ch.get(col)
+                if jam and str(jam).strip().upper() not in ['EMPTY', 'NULL', 'NONE']:
                     hp_tasks.append({
                         'jam': jam,
                         'icon': icon,
                         'name': html.escape(str(ch['NAMA_CHANNEL']))
                     })
         
-        # Urutkan berdasarkan jam
-        hp_tasks.sort(key=lambda x: x['jam'])
+        # Urutkan berdasarkan jam (tambah pengaman biar ga crash kalo jamnya aneh)
+        hp_tasks.sort(key=lambda x: str(x.get('jam', '23:59')))
         
         if not hp_tasks:
             text += "<i>(Belum ada jadwal upload)</i>\n"
