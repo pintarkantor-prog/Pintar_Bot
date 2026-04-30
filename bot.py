@@ -1133,76 +1133,126 @@ async def process_view_schedule(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "sched:bulk_create")
 async def process_sched_bulk_create(callback: types.CallbackQuery):
-    await callback.message.answer("⚔️ <b>MEMPROSES JADWAL ESTAFET...</b>\nMenghitung 27 slot & mengatur lompatan istirahat. Sabar boss!")
+    await callback.message.answer("⚔️ <b>MEMPROSES JADWAL OTOMATIS...</b>\nMenghitung slot & mengatur jadwal pintar. Sabar boss!")
     
     channels = db.get_audit_targets('PROSES')
     if not channels:
         await callback.message.answer("📭 Gak ada akun PROSES buat dijadwalin boss."); return
-        
-    # 1. Grouping HPs by (HP-1) % 9
-    groups = {i: {} for i in range(9)}
+    
+    # === SMART INTERVAL ENGINE (Sama kayak Web OS) ===
+    CFG_START = 8*60+15       # 08:15
+    CFG_BREAK_START = 11*60+30 # 11:30
+    CFG_BREAK_END = 12*60+45   # 12:45
+    CFG_END = 16*60            # 16:00
+    
+    def get_step(mode, cycle_idx):
+        if mode == 'pure15': return 15
+        if mode == 'pure10': return 10
+        # Mixed: [10, 10, 10, 15, 15]
+        return 10 if (cycle_idx % 5) < 3 else 15
+    
+    def count_slots(mode):
+        cur, count, ci = CFG_START, 0, 0
+        while cur <= CFG_END:
+            if cur >= CFG_BREAK_START and cur < CFG_BREAK_END:
+                cur = CFG_BREAK_END; continue
+            if cur > CFG_END: break
+            count += 1
+            cur += get_step(mode, ci); ci += 1
+            if cur >= CFG_BREAK_START and cur < CFG_BREAK_END:
+                cur = CFG_BREAK_END
+        return count
+    
+    def choose_mode(total):
+        if total <= count_slots('pure15'): return 'pure15'
+        if total <= count_slots('mixed'): return 'mixed'
+        return 'pure10'
+    
+    def m2t(m):
+        return f"{m//60}:{m%60:02d}"
+    
+    def gen_time_slots(total):
+        mode = choose_mode(total)
+        times, cur, ci = [], CFG_START, 0
+        for _ in range(total):
+            if cur >= CFG_BREAK_START and cur < CFG_BREAK_END: cur = CFG_BREAK_END
+            if cur > CFG_END: break
+            times.append(cur)
+            cur += get_step(mode, ci); ci += 1
+            if cur >= CFG_BREAK_START and cur < CFG_BREAK_END: cur = CFG_BREAK_END
+        return times, mode
+    
+    # 1. Grouping by HP
+    hp_groups = {}
     for ch in channels:
-        try:
-            hp_label = str(ch.get('HP', '0'))
-            hp_num = int(re.findall(r'\d+', hp_label)[0])
-            g_idx = (hp_num - 1) % 9
-            if hp_label not in groups[g_idx]: groups[g_idx][hp_label] = []
-            groups[g_idx][hp_label].append(ch)
+        hp = str(ch.get('HP', '0')).strip()
+        if not hp or hp in ('nan', 'null', 'None'): continue
+        try: int(hp)
         except: continue
-        
-    # 2. Pick Daily Random Start Group & Shuffle internal accounts
-    # Pake seed harian biar konsisten satu hari tapi beda tiap hari
+        if hp not in hp_groups: hp_groups[hp] = []
+        hp_groups[hp].append(ch)
+    
+    hp_keys = sorted(hp_groups.keys(), key=lambda x: int(x))
+    if not hp_keys:
+        await callback.message.answer("📭 Gak ada HP valid buat dijadwalin boss."); return
+    
+    # 2. Shuffle HP order (Fisher-Yates, anti-suspend)
     import random
-    seed_val = datetime.now().strftime('%Y%m%d')
-    random.seed(seed_val)
+    shuffled = list(hp_keys)
+    for i in range(len(shuffled)-1, 0, -1):
+        j = random.randint(0, i)
+        shuffled[i], shuffled[j] = shuffled[j], shuffled[i]
     
-    start_group_idx = random.randint(0, 8)
-    group_order = [(start_group_idx + i) % 9 for i in range(9)]
+    # 3. Hitung max slots needed
+    total_channels = sum(len(hp_groups[hp]) for hp in shuffled)
+    mx_slots = total_channels  # worst case
     
-    # Shuffle internal accounts for each HP
-    for g in range(9):
-        for hp_label in groups[g]:
-            random.shuffle(groups[g][hp_label])
-            
-    # 3. Generate 27 Time Slots (Jumping break 11:31 - 12:44)
-    current_time = datetime.strptime("08:15", "%H:%M")
-    break_start = datetime.strptime("11:30", "%H:%M")
-    break_resume = datetime.strptime("12:45", "%H:%M")
+    # 4. Generate time slots
+    times, mode = gen_time_slots(mx_slots)
+    mode_labels = {'pure15': '15 menit', 'mixed': '10+15 menit', 'pure10': '10 menit'}
     
-    time_slots = []
-    for _ in range(27):
-        time_slots.append(current_time.strftime("%H:%M"))
-        current_time += timedelta(minutes=15)
-        if current_time > break_start and current_time < break_resume:
-            current_time = break_resume
-            
-    # 4. Assign Times (Relay style: All Group's Slot 1, then Slot 2, then Slot 3)
+    if not times:
+        await callback.message.answer("⚠️ Tidak ada slot waktu tersedia!"); return
+    
+    # 5. Clear all jadwal lama dulu
+    all_ids = [ch['id'] for ch in channels]
+    for i in range(0, len(all_ids), 50):
+        batch = all_ids[i:i+50]
+        db.supabase.table('Channel_Pintar').update({'PAGI': None, 'SIANG': None, 'SORE': None}).in_('id', batch).execute()
+    
+    # 6. Round-robin assignment: All ch[0] (PAGI) → All ch[1] (SIANG) → All ch[2] (SORE)
+    updates = []
+    max_ch_per_hp = max(len(hp_groups[hp]) for hp in shuffled)
+    t_idx = 0
+    
+    for round_idx in range(min(max_ch_per_hp, 3)):
+        col = ['PAGI', 'SIANG', 'SORE'][round_idx]
+        for hp in shuffled:
+            if round_idx >= len(hp_groups[hp]): continue
+            ch = hp_groups[hp][round_idx]
+            jam = m2t(times[t_idx]) if t_idx < len(times) else None
+            t_idx += 1
+            if jam:
+                updates.append({'id': ch['id'], 'col': col, 'jam': jam})
+    
+    # 7. Write to Supabase
     updates_count = 0
-    time_idx = 0
+    for u in updates:
+        try:
+            db.supabase.table('Channel_Pintar').update({u['col']: u['jam']}).eq('id', u['id']).execute()
+            updates_count += 1
+        except: continue
     
-    # Loop 3 slots (Pagi, Siang, Sore)
-    for slot_idx in range(3):
-        # Loop each group in rotated order
-        for g_idx in group_order:
-            if time_idx >= len(time_slots): break
-            target_time = time_slots[time_idx]
-            time_idx += 1
-            
-            # Update all HPs in this group for this specific slot index
-            for hp_label, ch_list in groups[g_idx].items():
-                if slot_idx < len(ch_list):
-                    ch = ch_list[slot_idx]
-                    # Reset all slots and set the target one
-                    update_data = {'PAGI': 'EMPTY', 'SIANG': 'EMPTY', 'SORE': 'EMPTY'}
-                    col = ['PAGI', 'SIANG', 'SORE'][slot_idx]
-                    update_data[col] = target_time
-                    
-                    try:
-                        db.supabase.table('Channel_Pintar').update(update_data).eq('id', ch['id']).execute()
-                        updates_count += 1
-                    except: continue
-                
-    await callback.message.answer(f"✅ <b>ESTAFET BERES BOSS!</b>\nBerhasil menjadwalkan <b>{updates_count}</b> channel.\nJam 11:31-12:44 otomatis dilewati (Istirahat). 😴✨")
+    await callback.message.answer(
+        f"✅ <b>JADWAL OTOMATIS BERES BOSS!</b>\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"📊 Total: <b>{updates_count}</b> channel dijadwalkan\n"
+        f"⚡ Mode: <b>{mode_labels.get(mode, mode)}</b>\n"
+        f"🕐 Range: <b>08:15 - 16:00</b>\n"
+        f"☕ Istirahat: <b>11:30 - 12:45</b> (otomatis skip)\n"
+        f"🔀 HP diacak otomatis (anti-suspend)\n"
+        f"━━━━━━━━━━━━━━━"
+    )
     await process_view_schedule(callback)
 async def process_single_audit_upd(callback: types.CallbackQuery):
     _, mode, ch_id = callback.data.split(":")
