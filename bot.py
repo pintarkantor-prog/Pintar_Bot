@@ -622,17 +622,28 @@ async def process_ch_add_start(callback: types.CallbackQuery, state: FSMContext)
 
 @dp.message(InputChannelState.waiting_for_data)
 async def process_input_data(message: types.Message, state: FSMContext):
-    data = message.text.split("*")
-    if len(data) < 5:
-        await message.answer("❌ <b>Format Salah Boss!</b>\nContoh: <code>Email*Pass*Nama*Subs*Link</code>")
-        return
-        
-    email, password, nama, subs, link = [d.strip() for d in data[:5]]
-    user_name = "PINTARBOT"
-    tgl_now = db.get_now_indo()
+    lines = message.text.strip().split('\n')
+    valid_data = []
+    errors = []
     
-    try:
-        db.add_new_channel({
+    tgl_now = db.get_now_indo()
+    user_name = "PINTARBOT"
+    
+    for idx, line in enumerate(lines):
+        line = line.strip()
+        if not line: continue
+        
+        data = line.split("*")
+        if len(data) < 5:
+            errors.append(f"Baris {idx+1}: Kurang data")
+            continue
+            
+        email, password, nama, subs, link = [d.strip() for d in data[:5]]
+        
+        # Bersihin subs kalau ada yang iseng input pake titik/koma
+        subs = subs.replace('.', '').replace(',', '')
+        
+        valid_data.append({
             'TANGGAL': tgl_now,
             'EMAIL': email, 
             'PASSWORD': password, 
@@ -645,11 +656,25 @@ async def process_input_data(message: types.Message, state: FSMContext):
             'SLOT': None,
             'EDITED': f"New: {user_name} ({tgl_now})"
         })
-        await message.answer(f"✅ <b>Mantap Boss!</b> <code>{nama}</code> udah masuk status STANDBY.")
+    
+    if not valid_data:
+        err_msg = "\n".join(errors[:10]) # Tunjukin max 10 error
+        await message.answer(f"❌ <b>Gagal semua boss! Format salah.</b>\nContoh:\n<code>Email*Pass*Nama*Subs*Link</code>\n\nError Detail:\n{err_msg}")
+        return
+        
+    try:
+        # Bulk Insert ke Supabase
+        db.supabase.table('Channel_Pintar').insert(valid_data).execute()
+        
+        reply = f"✅ <b>Mantap Boss! {len(valid_data)} akun udah masuk gudang STANDBY.</b>\n"
+        if errors:
+            reply += f"\n⚠️ Tapi ada {len(errors)} baris yang diskip/error."
+            
+        await message.answer(reply)
         await state.clear()
         await cmd_channel_management(message, state)
     except Exception as e: 
-        await message.answer(f"❌ Gagal boss: {str(e)}")
+        await message.answer(f"❌ Gagal input massal boss: {str(e)}")
 
 @dp.message(UpdateStatusState.waiting_for_keyword)
 async def process_search_casual(message: types.Message, state: FSMContext):
