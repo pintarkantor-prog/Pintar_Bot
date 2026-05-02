@@ -1164,16 +1164,16 @@ async def process_sched_bulk_create(callback: types.CallbackQuery):
     if not channels:
         await callback.message.answer("📭 Gak ada akun PROSES buat dijadwalin boss."); return
     
-    # === SMART INTERVAL ENGINE (Sama kayak Web OS) ===
+    # === SMART INTERVAL ENGINE (Sama persis dengan Web OS) ===
     CFG_START = 8*60+15       # 08:15
     CFG_BREAK_START = 11*60+30 # 11:30
     CFG_BREAK_END = 12*60+45   # 12:45
     CFG_END = 16*60            # 16:00
+    MIN_GAP = 120              # 2 jam minimum gap antar channel di HP yang sama
     
     def get_step(mode, cycle_idx):
         if mode == 'pure15': return 15
         if mode == 'pure10': return 10
-        # Mixed: [10, 10, 10, 15, 15]
         return 10 if (cycle_idx % 5) < 3 else 15
     
     def count_slots(mode):
@@ -1194,12 +1194,13 @@ async def process_sched_bulk_create(callback: types.CallbackQuery):
         return 'pure10'
     
     def m2t(m):
-        return f"{m//60}:{m%60:02d}"
+        return f"{m//60:02d}:{m%60:02d}"
     
     def gen_time_slots(total):
         mode = choose_mode(total)
+        max_avail = count_slots(mode)
         times, cur, ci = [], CFG_START, 0
-        for _ in range(total):
+        for _ in range(max_avail):
             if cur >= CFG_BREAK_START and cur < CFG_BREAK_END: cur = CFG_BREAK_END
             if cur > CFG_END: break
             times.append(cur)
@@ -1207,7 +1208,7 @@ async def process_sched_bulk_create(callback: types.CallbackQuery):
             if cur >= CFG_BREAK_START and cur < CFG_BREAK_END: cur = CFG_BREAK_END
         return times, mode
     
-    # 1. Grouping by HP
+    # 1. Grouping by HP (filter valid HP only)
     hp_groups = {}
     for ch in channels:
         hp = str(ch.get('HP', '0')).strip()
@@ -1221,52 +1222,74 @@ async def process_sched_bulk_create(callback: types.CallbackQuery):
     if not hp_keys:
         await callback.message.answer("📭 Gak ada HP valid buat dijadwalin boss."); return
     
-    # 2. Shuffle HP order (Fisher-Yates, anti-suspend)
-    import random
-    shuffled = list(hp_keys)
-    for i in range(len(shuffled)-1, 0, -1):
-        j = random.randint(0, i)
-        shuffled[i], shuffled[j] = shuffled[j], shuffled[i]
+    th = len(hp_keys)
     
-    # 3. Hitung max slots needed
-    total_channels = sum(len(hp_groups[hp]) for hp in shuffled)
-    mx_slots = total_channels  # worst case
+    # 2. Auto-rotate: baca posisi terakhir dari file, geser 1 tiap generate
+    rotate_file = os.path.join(os.path.dirname(__file__), '.jadwal_rotate_idx')
+    try:
+        with open(rotate_file, 'r') as f:
+            rotate_idx = int(f.read().strip()) % th
+    except:
+        rotate_idx = 0
     
-    # 4. Generate time slots
-    times, mode = gen_time_slots(mx_slots)
+    rotated = hp_keys[rotate_idx:] + hp_keys[:rotate_idx]
+    
+    # Simpan posisi berikutnya
+    try:
+        with open(rotate_file, 'w') as f:
+            f.write(str((rotate_idx + 1) % th))
+    except:
+        pass
+    
+    # 3. Generate ALL available time slots
+    total_channels = len(channels)
+    times, mode = gen_time_slots(total_channels)
     mode_labels = {'pure15': '15 menit', 'mixed': '10+15 menit', 'pure10': '10 menit'}
     
     if not times:
         await callback.message.answer("⚠️ Tidak ada slot waktu tersedia!"); return
     
-    # 5. Clear all jadwal lama dulu
+    # 4. Clear all jadwal lama
     all_ids = [ch['id'] for ch in channels]
     for i in range(0, len(all_ids), 50):
         batch = all_ids[i:i+50]
         db.supabase.table('Channel_Pintar').update({'PAGI': None, 'SIANG': None, 'SORE': None}).in_('id', batch).execute()
     
-    # 6. Round-robin assignment: All ch[0] (PAGI) → All ch[1] (SIANG) → All ch[2] (SORE)
+    # 5. Global round-robin assignment (NO duplicates, 2-hour gap enforced)
     updates = []
-    max_ch_per_hp = max(len(hp_groups[hp]) for hp in shuffled)
+    all_hp_channels = [hp_groups[hp] for hp in rotated]
+    max_ch_per_hp = max(len(chs) for chs in all_hp_channels)
     t_idx = 0
+    hp_last_time = {}
     
     for round_idx in range(min(max_ch_per_hp, 3)):
         col = ['PAGI', 'SIANG', 'SORE'][round_idx]
-        for hp in shuffled:
-            if round_idx >= len(hp_groups[hp]): continue
-            ch = hp_groups[hp][round_idx]
+        for h in range(len(rotated)):
+            if round_idx >= len(all_hp_channels[h]): continue
+            hp = rotated[h]
+            ch = all_hp_channels[h][round_idx]
+            
+            # Enforce 2-hour gap
+            if hp in hp_last_time:
+                min_time = hp_last_time[hp] + MIN_GAP
+                while t_idx < len(times) and times[t_idx] < min_time:
+                    t_idx += 1
+            
             jam = m2t(times[t_idx]) if t_idx < len(times) else None
-            t_idx += 1
             if jam:
+                hp_last_time[hp] = times[t_idx]
                 updates.append({'id': ch['id'], 'col': col, 'jam': jam})
+            t_idx += 1
     
-    # 7. Write to Supabase
+    # 6. Write to Supabase (batch 5)
     updates_count = 0
-    for u in updates:
-        try:
-            db.supabase.table('Channel_Pintar').update({u['col']: u['jam']}).eq('id', u['id']).execute()
-            updates_count += 1
-        except: continue
+    for i in range(0, len(updates), 5):
+        batch = updates[i:i+5]
+        for u in batch:
+            try:
+                db.supabase.table('Channel_Pintar').update({u['col']: u['jam']}).eq('id', u['id']).execute()
+                updates_count += 1
+            except: continue
     
     await callback.message.answer(
         f"✅ <b>JADWAL OTOMATIS BERES BOSS!</b>\n"
@@ -1275,7 +1298,8 @@ async def process_sched_bulk_create(callback: types.CallbackQuery):
         f"⚡ Mode: <b>{mode_labels.get(mode, mode)}</b>\n"
         f"🕐 Range: <b>08:15 - 16:00</b>\n"
         f"☕ Istirahat: <b>11:30 - 12:45</b> (otomatis skip)\n"
-        f"🔀 HP diacak otomatis (anti-suspend)\n"
+        f"🔄 Mulai dari: <b>HP {rotated[0]}</b>\n"
+        f"⏱ Gap per HP: <b>Min 2 Jam</b>\n"
         f"━━━━━━━━━━━━━━━"
     )
     await process_view_schedule(callback)
