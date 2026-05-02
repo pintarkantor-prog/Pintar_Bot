@@ -1437,6 +1437,16 @@ async def process_slot_success(callback: types.CallbackQuery):
 # --- OTHER ---
 
 @dp.callback_query(F.data.startswith("ch_set:"))
+async def process_ch_set_status(callback: types.CallbackQuery):
+    _, ch_id, new_status = callback.data.split(":")
+    try:
+        db.supabase.table('Channel_Pintar').update({'STATUS': new_status}).eq('id', int(ch_id)).execute()
+        await callback.answer(f"✅ Status diubah jadi {new_status}!", show_alert=True)
+        # Refresh the detail view
+        callback.data = f"ch_view:{ch_id}"
+        await process_ch_detail_view(callback)
+    except Exception as e:
+        await callback.answer(f"❌ Gagal update status: {str(e)}", show_alert=True)
 
 @dp.message()
 async def handle_unknown_message_casual(message: types.Message):
